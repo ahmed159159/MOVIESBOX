@@ -1,81 +1,96 @@
-// BotInterface.jsx
-import { GoogleGenerativeAI } from "@google/generative-ai";
+// --- BotInterface.jsx ---
+// Works 100% on Vercel using Gemini REST API
 
-const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
+const GEMINI_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 const TMDB_KEY = import.meta.env.VITE_TMDB_API_KEY;
 
-const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+const MODEL_URL =
+  "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" +
+  GEMINI_KEY;
 
-// --- AI Prompt ---
-const ANALYSIS_PROMPT = `
-You are Popcorn, a smart movie assistant.
-Analyze the user's message and extract meaning.
-
-Respond ONLY with valid JSON:
+const SYSTEM_PROMPT = `
+You are Popcorn — a movie analysis assistant.
+Your job is to extract structured filters from the user's request.
+Return ONLY JSON:
 {
- "summary": "<short helpful summary>",
- "movie_query": "<search keywords or null>",
- "actor": "<actor name or null>",
- "director": "<director name or null>",
- "genre": "<genre or null>",
- "year": "<year or null>",
- "min_rating": "<rating or null>"
+ "summary": "one sentence human-friendly summary",
+ "type": "movie" or "tv",
+ "genre": "<name or null>",
+ "year": "<exact or null>",
+ "year_after": "<min year or null>",
+ "year_before": "<max year or null>",
+ "actor": "<name or null>",
+ "director": "<name or null>",
+ "min_rating": "<number or null>"
 }
 `;
 
-function cleanJSON(text) {
+export default async function PopcornInterface(userText) {
   try {
-    const s = text.indexOf("{");
-    const e = text.lastIndexOf("}");
-    return text.substring(s, e + 1);
-  } catch {
-    return "{}";
+    // 1) Send request to Gemini REST
+    const aiRes = await fetch(MODEL_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [
+          { role: "user", parts: [{ text: SYSTEM_PROMPT }] },
+          { role: "user", parts: [{ text: userText }] }
+        ],
+      }),
+    });
+
+    const aiData = await aiRes.json();
+
+    const reply = aiData?.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
+
+    let parsed;
+    try {
+      parsed = JSON.parse(cleanJson(reply));
+    } catch (e) {
+      parsed = { summary: "Sorry, I couldn't understand.", type: "movie" };
+    }
+
+    // 2) Fetch TMDB results
+    const movies = await fetchTMDB(parsed);
+
+    return {
+      summary: parsed.summary || "Here’s what I found:",
+      movies: movies || [],
+    };
+  } catch (err) {
+    console.error("BotInterface error:", err);
+    return {
+      summary: "⚠️ Something went wrong.",
+      movies: [],
+    };
   }
 }
 
-// ----- AI Analysis -----
-async function analyzeQuestion(userMessage) {
-  const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+// -------- Helper Functions --------
 
-  const result = await model.generateContent([
-    { role: "system", parts: [{ text: ANALYSIS_PROMPT }] },
-    { role: "user", parts: [{ text: userMessage }] }
-  ]);
-
-  const raw = result.response.text();
-  const json = cleanJSON(raw);
-  return JSON.parse(json);
+function cleanJson(txt) {
+  const t = txt.trim();
+  const s = t.indexOf("{");
+  const e = t.lastIndexOf("}");
+  return t.substring(s, e + 1);
 }
 
-// ----- TMDB Search -----
-async function searchTMDB(params) {
-  const q = params.movie_query || params.actor || params.director || "movie";
+async function fetchTMDB(filters) {
+  const type = filters.type === "tv" ? "tv" : "movie";
 
-  const url = new URL("https://api.themoviedb.org/3/search/movie");
+  const url = new URL(`https://api.themoviedb.org/3/discover/${type}`);
   url.searchParams.set("api_key", TMDB_KEY);
-  url.searchParams.set("query", q);
+  url.searchParams.set("sort_by", "popularity.desc");
+
+  if (filters.year) url.searchParams.set("primary_release_year", filters.year);
+  if (filters.year_after)
+    url.searchParams.set("primary_release_date.gte", `${filters.year_after}-01-01`);
+  if (filters.year_before)
+    url.searchParams.set("primary_release_date.lte", `${filters.year_before}-12-31`);
+  if (filters.min_rating)
+    url.searchParams.set("vote_average.gte", filters.min_rating);
 
   const res = await fetch(url);
   const data = await res.json();
-
-  return data.results?.slice(0, 8) || [];
-}
-
-// ----- Main Function -----
-export default async function PopcornInterface(userMessage) {
-  try {
-    const analysis = await analyzeQuestion(userMessage);
-    const movies = await searchTMDB(analysis);
-
-    return {
-      summary: analysis.summary,
-      movies
-    };
-  } catch (err) {
-    console.error("Popcorn Error:", err);
-    return {
-      summary: "⚠️ Something went wrong. Try again.",
-      movies: []
-    };
-  }
+  return data.results || [];
 }
