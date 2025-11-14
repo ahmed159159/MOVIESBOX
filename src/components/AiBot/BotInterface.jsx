@@ -1,277 +1,150 @@
-import React, { useState, useEffect, useRef } from "react";
+// ===========================
+// 🔥 Popcorn AI Bot (Fireworks)
+// ===========================
 
-const TMDB_KEY = import.meta.env.VITE_TMDB_API;
-const FW_KEY = import.meta.env.VITE_FIREWORKS_API_KEY;
-const FW_MODEL = import.meta.env.VITE_FIREWORKS_MODEL;
+import { useState } from "react";
 
-// =====================
-//   STRONG JSON PROMPT
-// =====================
-const SYSTEM_PROMPT = `
-You are Dobby, a movie assistant.
-Your ONLY job is to extract filters from user text and return STRICT JSON ONLY.
+const FIREWORKS_API_KEY = import.meta.env.VITE_FIREWORKS_API_KEY;
+const FIREWORKS_MODEL = import.meta.env.VITE_FIREWORKS_MODEL;
+const TMDB_KEY = import.meta.env.VITE_TMDB_KEY;
 
-Never answer with normal text. Never repeat the user message.
-Never explain. Never include markdown.
+// ---------- Global context (memory)
+let conversation = [
+  {
+    role: "system",
+    content: `
+You are Dobby, a smart movie assistant.
+Your job is to extract filters from the user's request ONLY in JSON.
 
-Output format (ALWAYS):
+STRICT RULE:
+- ALWAYS return JSON ONLY. Never return text outside JSON.
+- JSON format:
+
 {
- "summary": "short english sentence",
- "genre": "action|comedy|drama|horror|romance|null",
- "actor": "Tom Hanks|null",
- "director": "name|null",
- "year": 2000|null,
- "year_after": 2010|null,
- "year_before": 2019|null,
- "min_rating": 7|null,
- "count": 10
+ "type": "movie",
+ "genre": "<genre or null>",
+ "actor": "<actor name or null>",
+ "director": "<director name or null>",
+ "year": "<exact year or null>",
+ "rating": "<minimum rating or null>",
+ "limit": "<number of movies or null>",
+ "summary": "<1 short English sentence summarizing the request>"
 }
 
-Rules:
-- If user writes "Tom Hanks movies", set actor = "Tom Hanks".
-- If user writes only actor name, treat as actor filter.
-- If user writes "best movies", genre stays null.
-- If user writes "20 movies", set count = 20.
-- If no special request: count = 10.
-- Always return JSON. Nothing else.
-`;
+If the user asks follow-up like "from 2015" or "with Tom Cruise",
+USE previous filters from the conversation and update them.
 
-export default function BotInterface({ setActive }) {
-  const [input, setInput] = useState("");
-  const [messages, setMessages] = useState([
-    {
-      role: "assistant",
-      content:
-        "Hello! I’m Dobby — your smart movie assistant 🍿\nAsk me anything and I'll help you find the perfect movie!",
+Never ask questions. Never apologize. Just return JSON.
+`
+  }
+];
+
+// ---------------- FIREWORKS API ----------------
+
+async function askFireworks(prompt) {
+  conversation.push({ role: "user", content: prompt });
+
+  const res = await fetch("https://api.fireworks.ai/inference/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${FIREWORKS_API_KEY}`,
+      "Content-Type": "application/json"
     },
-  ]);
-  const [movies, setMovies] = useState([]);
-  const [loading, setLoading] = useState(false);
+    body: JSON.stringify({
+      model: FIREWORKS_MODEL,
+      messages: conversation,
+      temperature: 0.2,
+      max_tokens: 300
+    })
+  });
 
-  const chatRef = useRef(null);
+  const data = await res.json();
+  let output = data?.choices?.[0]?.message?.content || "";
 
-  useEffect(() => {
-    if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight;
-  }, [messages, movies]);
-
-  // =============================
-  //  REGEX JSON CLEANER
-  // =============================
-  function extractJson(text) {
-    try {
-      const match = text.match(/\{[\s\S]*\}/);
-      if (!match) return null;
-      return JSON.parse(match[0]);
-    } catch {
-      return null;
-    }
+  // Clean non-JSON
+  output = output.trim();
+  if (output.startsWith("```")) {
+    output = output.substring(output.indexOf("{"), output.lastIndexOf("}") + 1);
   }
 
-  // =============================
-  //  CALL FIREWORKS
-  // =============================
-  async function aiParse(userText) {
-    const res = await fetch(
-      "https://api.fireworks.ai/inference/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${FW_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: FW_MODEL,
-          temperature: 0.3,
-          max_tokens: 350,
-          messages: [
-            { role: "system", content: SYSTEM_PROMPT },
-            { role: "user", content: userText },
-          ],
-        }),
-      }
-    );
+  try {
+    const parsed = JSON.parse(output);
+    conversation.push({ role: "assistant", content: JSON.stringify(parsed) });
+    return parsed;
+  } catch (err) {
+    console.log("Fixing malformed JSON...");
 
-    const data = await res.json();
-    const raw = data?.choices?.[0]?.message?.content || "";
-    return extractJson(raw);
+    // fallback: ask AI again but force JSON strictly
+    return await askFireworks(`
+Return ONLY JSON. Fix this into valid JSON:
+${output}
+`);
   }
+}
 
-  // =============================
-  //   TMDB Search (Actor OR Filters)
-  // =============================
-  async function fetchMovies(filters) {
-    // Actor search
-    if (filters.actor) {
-      const s = await fetch(
-        `https://api.themoviedb.org/3/search/person?api_key=${TMDB_KEY}&query=${encodeURIComponent(
-          filters.actor
-        )}`
-      );
-      const sd = await s.json();
+// ================ TMDB HELPERS ==================
 
-      const actorId = sd.results?.[0]?.id;
-      if (!actorId) return [];
-
-      const cr = await fetch(
-        `https://api.themoviedb.org/3/discover/movie?api_key=${TMDB_KEY}&with_cast=${actorId}`
-      );
-      const cd = await cr.json();
-
-      return cd.results.slice(0, filters.count || 10);
-    }
-
-    // Discover movie filters
-    const url = new URL("https://api.themoviedb.org/3/discover/movie");
-    url.searchParams.set("api_key", TMDB_KEY);
-    url.searchParams.set("sort_by", "popularity.desc");
-
-    if (filters.genre) {
-      const map = {
-        action: 28,
-        comedy: 35,
-        drama: 18,
-        horror: 27,
-        romance: 10749,
-      };
-      if (map[filters.genre]) {
-        url.searchParams.set("with_genres", map[filters.genre]);
-      }
-    }
-
-    if (filters.year) url.searchParams.set("primary_release_year", filters.year);
-    if (filters.year_after)
-      url.searchParams.set(
-        "primary_release_date.gte",
-        `${filters.year_after}-01-01`
-      );
-    if (filters.year_before)
-      url.searchParams.set(
-        "primary_release_date.lte",
-        `${filters.year_before}-12-31`
-      );
-
-    const r = await fetch(url);
-    const d = await r.json();
-    return d.results.slice(0, filters.count || 10);
-  }
-
-  // =============================
-  //   SEND USER MESSAGE
-  // =============================
-  async function onSend() {
-    const userText = input.trim();
-    if (!userText) return;
-
-    setMessages((m) => [...m, { role: "user", content: userText }]);
-    setInput("");
-    setMovies([]);
-    setLoading(true);
-
-    // parse request
-    const parsed = await aiParse(userText);
-
-    if (!parsed) {
-      setMessages((m) => [
-        ...m,
-        {
-          role: "assistant",
-          content: "⚠️ Sorry — I couldn’t understand your request.",
-        },
-      ]);
-      setLoading(false);
-      return;
-    }
-
-    // Show summary
-    setMessages((m) => [
-      ...m,
-      { role: "assistant", content: parsed.summary },
-    ]);
-
-    // Search TMDB
-    const results = await fetchMovies(parsed);
-    setMovies(results);
-    setLoading(false);
-  }
-
-  return (
-    <div className="w-[600px] h-[650px] bg-black/90 rounded-2xl border border-white/20 backdrop-blur-xl shadow-2xl flex flex-col overflow-hidden">
-      
-      {/* HEADER */}
-      <div className="p-4 border-b border-white/10 flex justify-between items-center">
-        <div>
-          <div className="text-lg font-bold">Dobby AI</div>
-          <div className="text-xs text-white/60">Movie Assistant</div>
-        </div>
-        <button onClick={() => setActive(false)} className="text-red-500 text-xl">×</button>
-      </div>
-
-      {/* CHAT */}
-      <div ref={chatRef} className="flex-1 overflow-y-auto p-4 space-y-3">
-        {messages.map((m, i) => (
-          <div
-            key={i}
-            className={`p-2 rounded-lg max-w-[85%] ${
-              m.role === "user"
-                ? "ml-auto bg-emerald-400 text-black"
-                : "mr-auto bg-white/10"
-            }`}
-          >
-            {m.content}
-          </div>
-        ))}
-
-        {loading && (
-          <div className="bg-white/10 p-2 rounded animate-pulse w-[120px]">
-            Thinking…
-          </div>
-        )}
-      </div>
-
-      {/* RESULTS */}
-      {movies.length > 0 && (
-        <div className="border-t border-white/10 max-h-[250px] overflow-y-auto p-3 space-y-3 bg-white/5">
-          {movies.map((m) => (
-            <a
-              key={m.id}
-              href={`/info?id=${m.id}`}
-              className="flex gap-3 bg-white/10 rounded-lg p-2 hover:bg-white/20 transition"
-            >
-              {m.poster_path && (
-                <img
-                  src={`https://image.tmdb.org/t/p/w200${m.poster_path}`}
-                  className="w-[60px] h-[90px] rounded object-cover"
-                />
-              )}
-              <div className="flex flex-col text-sm">
-                <div className="font-semibold">{m.title}</div>
-                <div className="text-white/60">
-                  ⭐ {m.vote_average?.toFixed(1)} | {m.release_date?.slice(0, 4)}
-                </div>
-              </div>
-            </a>
-          ))}
-        </div>
-      )}
-
-      {/* INPUT */}
-      <div className="p-3 border-t border-white/10 bg-black/70">
-        <div className="flex gap-2">
-          <input
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && onSend()}
-            className="flex-1 p-2 rounded bg-white/10 outline-none"
-            placeholder="Ask me anything…"
-          />
-          <button
-            onClick={onSend}
-            className="px-4 py-2 bg-emerald-400 text-black rounded font-bold"
-          >
-            Send
-          </button>
-        </div>
-      </div>
-    </div>
+async function searchByActor(name) {
+  const res = await fetch(
+    `https://api.themoviedb.org/3/search/person?api_key=${TMDB_KEY}&query=${encodeURIComponent(name)}`
   );
+  const data = await res.json();
+  return data.results?.[0]?.id || null;
+}
+
+async function getActorMovies(personId) {
+  const res = await fetch(
+    `https://api.themoviedb.org/3/person/${personId}/movie_credits?api_key=${TMDB_KEY}`
+  );
+  const data = await res.json();
+  return data.cast || [];
+}
+
+async function discoverMovies(filters) {
+  const url = new URL("https://api.themoviedb.org/3/discover/movie");
+  url.searchParams.set("api_key", TMDB_KEY);
+  url.searchParams.set("sort_by", "popularity.desc");
+
+  if (filters.genre) url.searchParams.set("with_genres", filters.genre);
+  if (filters.year) url.searchParams.set("primary_release_year", filters.year);
+  if (filters.rating) url.searchParams.set("vote_average.gte", filters.rating);
+
+  const res = await fetch(url);
+  const data = await res.json();
+  return data.results || [];
+}
+
+// ================ MAIN BOT FUNCTION ================
+
+export default async function BotInterface(query) {
+  try {
+    // 1) Get structured filters from Fireworks AI
+    const filters = await askFireworks(query);
+
+    let movies = [];
+    const limit = filters.limit ? Number(filters.limit) : 10;
+
+    // 2) Actor
+    if (filters.actor) {
+      const id = await searchByActor(filters.actor);
+      if (id) movies = await getActorMovies(id);
+    } else {
+      // 3) General discover
+      movies = await discoverMovies(filters);
+    }
+
+    // 4) Limit results
+    movies = movies.slice(0, limit);
+
+    return {
+      summary: filters.summary,
+      movies
+    };
+  } catch (err) {
+    console.error("Bot error:", err);
+    return {
+      summary: "⚠️ Sorry—couldn't fetch results.",
+      movies: []
+    };
+  }
 }
