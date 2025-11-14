@@ -1,37 +1,36 @@
 // BotInterface.js
-// Uses Gemini REST API to extract intent, then uses TMDB to fetch results.
-// Exports default async function PopcornInterface(query)
+// Fireworks (chat completions) -> parse intent JSON -> TMDB -> return results
+// Place this file at src/components/AiBot/BotInterface.js
 
-const GEMINI_KEY = import.meta.env.VITE_GEMINI_API_KEY;
+const FIREWORKS_KEY = import.meta.env.VITE_FIREWORKS_API_KEY;
+const FIREWORKS_MODEL = import.meta.env.VITE_FIREWORKS_MODEL || "accounts/fireworks/models/gpt-oss-20b";
 const TMDB_KEY = import.meta.env.VITE_TMDB_API_KEY;
-// Optional base for internal links fallback to your domain
 const SITE_BASE = import.meta.env.VITE_SITE_BASE || "https://moviesbox-delta.vercel.app";
 
-const GEMINI_URL =
-  "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" +
-  GEMINI_KEY;
+const FIREWORKS_URL = "https://api.fireworks.ai/inference/v1/chat/completions";
 
 const SYSTEM_PROMPT = `
-You are Dobby, a smart movie assistant. Analyze the user's request and return ONLY valid JSON with this exact shape:
+You are Dobby, a movie assistant. Analyze the user's request and output STRICT JSON only (no extra text).
+Shape exactly:
 
 {
-  "summary": "<short human-friendly summary>",
-  "type": "movie" or "tv",
-  "genre_name": "<genre name or null>",
-  "genre_id": <tmdb genre id number or null>,
-  "actor": "<actor name or null>",
-  "director": "<director name or null>",
-  "year": <exact year or null>,
-  "year_after": <min year or null>,
-  "year_before": <max year or null>,
-  "min_rating": <minimum rating number or null>,
-  "limit": <number of results requested or null>
+ "summary": "<short human-friendly summary>",
+ "type": "movie" or "tv",
+ "genre_name": "<genre name or null>",
+ "genre_id": <tmdb genre id number or null>,
+ "actor": "<actor name or null>",
+ "director": "<director name or null>",
+ "year": <exact year or null>,
+ "year_after": <min year or null>,
+ "year_before": <max year or null>,
+ "min_rating": <minimum rating number or null>,
+ "limit": <requested number or null>
 }
 
-Make JSON strict and nothing else. If the user asked for "top 20" set "limit":20. If no number requested, do not set limit (null).
+If user asked for "top 20" set "limit":20. Make JSON valid and nothing else.
 `;
 
-// small genre map fallback (same ids as TMDB)
+// small TMDB genre map fallback
 const GENRE_MAP = {
   action: 28, adventure: 12, animation: 16, comedy: 35, crime: 80,
   documentary: 99, drama: 18, family: 10751, fantasy: 14, history: 36,
@@ -41,11 +40,8 @@ const GENRE_MAP = {
 
 function safeParseJSON(str) {
   try {
-    // remove code fences if any
     let t = String(str || "");
-    if (t.startsWith("```")) {
-      t = t.split("```").slice(1).join("```");
-    }
+    if (t.startsWith("```")) t = t.split("```").slice(1).join("```");
     const s = t.indexOf("{");
     const e = t.lastIndexOf("}");
     if (s === -1 || e === -1) return null;
@@ -56,40 +52,44 @@ function safeParseJSON(str) {
   }
 }
 
-async function callGemini(userQuery) {
-  const body = {
-    contents: [
-      { role: "system", parts: [{ text: SYSTEM_PROMPT }] },
-      { role: "user", parts: [{ text: userQuery }] },
+async function callFireworks(userQuery) {
+  if (!FIREWORKS_KEY) throw new Error("Fireworks API key missing (VITE_FIREWORKS_API_KEY).");
+
+  const payload = {
+    model: FIREWORKS_MODEL,
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT },
+      { role: "user", content: userQuery }
     ],
-    // keep temperature low, we want structured JSON
-    temperature: 0.2,
-    max_output_tokens: 1024,
+    max_tokens: 1024,
+    temperature: 0.2
   };
 
-  const res = await fetch(GEMINI_URL, {
+  const res = await fetch(FIREWORKS_URL, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${FIREWORKS_KEY}`
+    },
+    body: JSON.stringify(payload)
   });
 
   if (!res.ok) {
-    const txt = await res.text();
-    throw new Error("Gemini error: " + res.status + " " + txt);
+    const text = await res.text();
+    throw new Error(`Fireworks error ${res.status}: ${text}`);
   }
 
   const data = await res.json();
-  // Attempt to extract text candidate
-  const reply =
-    data?.candidates?.[0]?.content?.parts?.[0]?.text ||
-    data?.candidates?.[0]?.content?.[0]?.text ||
-    data?.output?.[0]?.content?.[0]?.text ||
-    "";
-
-  return reply;
+  // Fireworks typical shape: data.choices[0].message.content  OR data.choices[0].message.content (string)
+  const content = data?.choices?.[0]?.message?.content || data?.choices?.[0]?.message?.content?.[0] || "";
+  // These providers vary; if content is an array or object, convert to string
+  if (typeof content === "string") return content;
+  // fallback: try common fields
+  if (Array.isArray(content) && content[0] && content[0].text) return content[0].text;
+  if (content?.text) return content.text;
+  return "";
 }
 
-// TMDB helpers
 async function getPersonId(name) {
   if (!name) return null;
   const url = `https://api.themoviedb.org/3/search/person?api_key=${TMDB_KEY}&query=${encodeURIComponent(name)}&page=1`;
@@ -100,7 +100,6 @@ async function getPersonId(name) {
 }
 
 async function discoverTMDB(filters, limit = 10) {
-  // prefer discover endpoint; TMDB returns up to 20 per page
   const type = filters.type === "tv" ? "tv" : "movie";
   const url = new URL(`https://api.themoviedb.org/3/discover/${type}`);
   url.searchParams.set("api_key", TMDB_KEY);
@@ -130,61 +129,50 @@ async function discoverTMDB(filters, limit = 10) {
 
 export default async function PopcornInterface(userQuery) {
   try {
-    // 1) Ask Gemini to produce strict JSON intent
-    const raw = await callGemini(userQuery);
-    const parsed = safeParseJSON(raw);
+    // 1) call Fireworks to get structured intent
+    const raw = await callFireworks(userQuery);
+    let parsed = safeParseJSON(raw);
 
-    // fallback if parsing failed — do a small heuristic fallback
-    let intent = parsed;
-    if (!intent) {
-      // simple fallback parser (very small): extract numbers and genre words
-      const q = userQuery.toLowerCase();
-      const numberMatch = q.match(/\b([0-9]{1,2})\b/);
-      const limit = numberMatch ? Number(numberMatch[1]) : null;
-      let genre_id = null;
-      for (const g of Object.keys(GENRE_MAP)) {
-        if (q.includes(g)) {
-          genre_id = GENRE_MAP[g];
-          break;
-        }
-      }
-      intent = {
-        summary: `Searching for movies matching: ${userQuery}`,
+    // fallback: small heuristic if AI fails to return json
+    if (!parsed) {
+      const q = (userQuery || "").toLowerCase();
+      const nm = q.match(/\b([0-9]{1,2})\b/);
+      parsed = {
+        summary: `Searching for: ${userQuery}`,
         type: /tv|series|show/.test(q) ? "tv" : "movie",
         genre_name: null,
-        genre_id,
+        genre_id: null,
         actor: null,
         director: null,
         year: null,
         year_after: null,
         year_before: null,
         min_rating: null,
-        limit: limit,
+        limit: nm ? Number(nm[1]) : null
       };
+      for (const g of Object.keys(GENRE_MAP)) if (q.includes(g)) parsed.genre_id = GENRE_MAP[g];
     }
 
-    // 2) normalize genre id if genre_name present
-    if (intent.genre_name && !intent.genre_id) {
-      const key = intent.genre_name.toLowerCase().replace(/\s+/g, "_");
-      intent.genre_id = GENRE_MAP[key] || null;
+    // normalize genre_name -> id
+    if (parsed.genre_name && !parsed.genre_id) {
+      const key = String(parsed.genre_name).toLowerCase().replace(/\s+/g, "_");
+      parsed.genre_id = GENRE_MAP[key] || null;
     }
 
-    // 3) determine limit (default 10)
+    // determine limit
     let limit = 10;
-    if (intent.limit && Number.isFinite(Number(intent.limit))) {
-      limit = Math.max(1, Math.min(50, Number(intent.limit))); // clamp 1..50
+    if (parsed.limit && Number.isFinite(Number(parsed.limit))) {
+      limit = Math.max(1, Math.min(50, Number(parsed.limit)));
     } else {
-      // if user query contains a number (like "top 20"), use it
-      const nm = userQuery.match(/\b([0-9]{1,2})\b/);
+      const nm = (userQuery || "").match(/\b([0-9]{1,2})\b/);
       if (nm) limit = Math.max(1, Math.min(50, Number(nm[1])));
     }
 
-    // 4) fetch movies using prioritized strategy: actor -> director -> discover
+    // 2) fetch movies prioritized: actor -> director -> discover
     let movies = [];
-    if (intent.actor) {
-      const pid = await getPersonId(intent.actor);
+    if (parsed.actor) {
+      const pid = await getPersonId(parsed.actor);
       if (pid) {
-        // use discover with_cast
         const url = new URL("https://api.themoviedb.org/3/discover/movie");
         url.searchParams.set("api_key", TMDB_KEY);
         url.searchParams.set("with_cast", String(pid));
@@ -195,50 +183,40 @@ export default async function PopcornInterface(userQuery) {
           movies = j.results || [];
         }
       }
-    } else if (intent.director) {
-      const pid = await getPersonId(intent.director);
+    } else if (parsed.director) {
+      const pid = await getPersonId(parsed.director);
       if (pid) {
-        // fetch credits and get directed works
         const url = `https://api.themoviedb.org/3/person/${pid}/movie_credits?api_key=${TMDB_KEY}`;
         const r = await fetch(url);
         if (r.ok) {
           const j = await r.json();
-          // crew entries with job Director
-          movies = (j.crew || []).filter((c) => c.job && c.job.toLowerCase().includes("director"));
+          movies = (j.crew || []).filter(c => c.job && c.job.toLowerCase().includes("director"));
         }
       }
     }
 
-    // fallback to discover if still empty
     if (!movies || movies.length === 0) {
-      movies = await discoverTMDB(intent, limit);
+      movies = await discoverTMDB(parsed, Math.max(limit, 20)); // fetch more to filter locally
     }
 
-    // 5) client-side final filtering & sorting by relevance approximation
-    movies = (movies || []).filter((m) => {
-      // filter by rating
-      if (intent.min_rating && (m.vote_average || 0) < Number(intent.min_rating)) return false;
-      // filter by year constraints
-      const y = (m.release_date || m.first_air_date || "").slice(0, 4);
-      if (intent.year && y && Number(y) !== Number(intent.year)) return false;
-      if (intent.year_after && y && Number(y) <= Number(intent.year_after)) return false;
-      if (intent.year_before && y && Number(y) >= Number(intent.year_before)) return false;
-      // genre filter handled by discover, but double-check
-      if (intent.genre_id && Array.isArray(m.genre_ids) && m.genre_ids.length && !m.genre_ids.includes(Number(intent.genre_id))) return false;
+    // 3) client-side filtering & ranking
+    movies = (movies || []).filter(m => {
+      if (parsed.min_rating && (m.vote_average || 0) < Number(parsed.min_rating)) return false;
+      const y = (m.release_date || m.first_air_date || "").slice(0,4);
+      if (parsed.year && y && Number(y) !== Number(parsed.year)) return false;
+      if (parsed.year_after && y && Number(y) <= Number(parsed.year_after)) return false;
+      if (parsed.year_before && y && Number(y) >= Number(parsed.year_before)) return false;
+      if (parsed.genre_id && Array.isArray(m.genre_ids) && m.genre_ids.length && !m.genre_ids.includes(Number(parsed.genre_id))) return false;
       return true;
     });
 
-    // 6) sort: prefer higher vote_average and then popularity
-    movies.sort((a, b) => {
+    movies.sort((a,b) => {
       const av = a.vote_average || 0;
       const bv = b.vote_average || 0;
       if (bv !== av) return bv - av;
-      const ap = a.popularity || 0;
-      const bp = b.popularity || 0;
-      return bp - ap;
+      return (b.popularity || 0) - (a.popularity || 0);
     });
 
-    // limit results
     const top = (movies || []).slice(0, limit).map(m => ({
       id: m.id,
       title: m.title || m.name,
@@ -247,13 +225,14 @@ export default async function PopcornInterface(userQuery) {
       vote_average: m.vote_average,
       release_date: m.release_date || m.first_air_date,
       tmdb: `https://www.themoviedb.org/${m.media_type || "movie"}/${m.id}`,
-      local: `${SITE_BASE}/info?id=${m.id}` // link to your site
+      local: `${SITE_BASE}/info?id=${m.id}`
     }));
 
     return {
-      summary: intent.summary || `Searching for "${userQuery}"`,
+      summary: parsed.summary || `Searching for "${userQuery}"`,
       movies: top
     };
+
   } catch (err) {
     console.error("PopcornInterface error", err);
     return {
