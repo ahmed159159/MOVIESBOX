@@ -1,243 +1,221 @@
-// BotInterface.js
-// Fireworks (chat completions) -> parse intent JSON -> TMDB -> return results
-// Place this file at src/components/AiBot/BotInterface.js
+import React, { useState, useEffect, useRef } from "react";
 
-const FIREWORKS_KEY = import.meta.env.VITE_FIREWORKS_API_KEY;
-const FIREWORKS_MODEL = import.meta.env.VITE_FIREWORKS_MODEL || "accounts/fireworks/models/gpt-oss-20b";
-const TMDB_KEY = import.meta.env.VITE_TMDB_API_KEY;
-const SITE_BASE = import.meta.env.VITE_SITE_BASE || "https://moviesbox-delta.vercel.app";
+const TMDB_KEY = import.meta.env.VITE_TMDB_API;
+const FW_KEY = import.meta.env.VITE_FIREWORKS_API_KEY;
+const FW_MODEL = import.meta.env.VITE_FIREWORKS_MODEL;
 
-const FIREWORKS_URL = "https://api.fireworks.ai/inference/v1/chat/completions";
-
-const SYSTEM_PROMPT = `
-You are Dobby, a movie assistant. Analyze the user's request and output STRICT JSON only (no extra text).
-Shape exactly:
-
-{
- "summary": "<short human-friendly summary>",
- "type": "movie" or "tv",
- "genre_name": "<genre name or null>",
- "genre_id": <tmdb genre id number or null>,
- "actor": "<actor name or null>",
- "director": "<director name or null>",
- "year": <exact year or null>,
- "year_after": <min year or null>,
- "year_before": <max year or null>,
- "min_rating": <minimum rating number or null>,
- "limit": <requested number or null>
-}
-
-If user asked for "top 20" set "limit":20. Make JSON valid and nothing else.
-`;
-
-// small TMDB genre map fallback
-const GENRE_MAP = {
-  action: 28, adventure: 12, animation: 16, comedy: 35, crime: 80,
-  documentary: 99, drama: 18, family: 10751, fantasy: 14, history: 36,
-  horror: 27, music: 10402, mystery: 9648, romance: 10749,
-  sci_fi: 878, scifi: 878, "sci-fi": 878, thriller: 53, war: 10752, western: 37
-};
-
-function safeParseJSON(str) {
-  try {
-    let t = String(str || "");
-    if (t.startsWith("```")) t = t.split("```").slice(1).join("```");
-    const s = t.indexOf("{");
-    const e = t.lastIndexOf("}");
-    if (s === -1 || e === -1) return null;
-    const js = t.slice(s, e + 1);
-    return JSON.parse(js);
-  } catch (err) {
-    return null;
-  }
-}
-
-async function callFireworks(userQuery) {
-  if (!FIREWORKS_KEY) throw new Error("Fireworks API key missing (VITE_FIREWORKS_API_KEY).");
-
-  const payload = {
-    model: FIREWORKS_MODEL,
-    messages: [
-      { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: userQuery }
-    ],
-    max_tokens: 1024,
-    temperature: 0.2
-  };
-
-  const res = await fetch(FIREWORKS_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${FIREWORKS_KEY}`
+export default function BotInterface({ setActive }) {
+  const [input, setInput] = useState("");
+  const [messages, setMessages] = useState([
+    {
+      role: "assistant",
+      content:
+        "Hello! I’m Dobby — your smart movie assistant 🍿\nAsk me anything and I'll help you find the perfect movie!",
     },
-    body: JSON.stringify(payload)
-  });
+  ]);
+  const [movies, setMovies] = useState([]);
+  const [loading, setLoading] = useState(false);
 
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Fireworks error ${res.status}: ${text}`);
-  }
+  const chatRef = useRef(null);
 
-  const data = await res.json();
-  // Fireworks typical shape: data.choices[0].message.content  OR data.choices[0].message.content (string)
-  const content = data?.choices?.[0]?.message?.content || data?.choices?.[0]?.message?.content?.[0] || "";
-  // These providers vary; if content is an array or object, convert to string
-  if (typeof content === "string") return content;
-  // fallback: try common fields
-  if (Array.isArray(content) && content[0] && content[0].text) return content[0].text;
-  if (content?.text) return content.text;
-  return "";
-}
-
-async function getPersonId(name) {
-  if (!name) return null;
-  const url = `https://api.themoviedb.org/3/search/person?api_key=${TMDB_KEY}&query=${encodeURIComponent(name)}&page=1`;
-  const r = await fetch(url);
-  if (!r.ok) return null;
-  const j = await r.json();
-  return j.results?.[0]?.id || null;
-}
-
-async function discoverTMDB(filters, limit = 10) {
-  const type = filters.type === "tv" ? "tv" : "movie";
-  const url = new URL(`https://api.themoviedb.org/3/discover/${type}`);
-  url.searchParams.set("api_key", TMDB_KEY);
-  url.searchParams.set("sort_by", "popularity.desc");
-  url.searchParams.set("page", "1");
-
-  if (filters.genre_id) url.searchParams.set("with_genres", String(filters.genre_id));
-  if (filters.min_rating) url.searchParams.set("vote_average.gte", String(filters.min_rating));
-  if (filters.year) {
-    if (type === "tv") url.searchParams.set("first_air_date_year", String(filters.year));
-    else url.searchParams.set("primary_release_year", String(filters.year));
-  }
-  if (filters.year_after) {
-    const key = type === "tv" ? "first_air_date.gte" : "primary_release_date.gte";
-    url.searchParams.set(key, `${filters.year_after}-01-01`);
-  }
-  if (filters.year_before) {
-    const key = type === "tv" ? "first_air_date.lte" : "primary_release_date.lte";
-    url.searchParams.set(key, `${filters.year_before}-12-31`);
-  }
-
-  const r = await fetch(url.toString());
-  if (!r.ok) return [];
-  const j = await r.json();
-  return (j.results || []).slice(0, limit);
-}
-
-export default async function PopcornInterface(userQuery) {
-  try {
-    // 1) call Fireworks to get structured intent
-    const raw = await callFireworks(userQuery);
-    let parsed = safeParseJSON(raw);
-
-    // fallback: small heuristic if AI fails to return json
-    if (!parsed) {
-      const q = (userQuery || "").toLowerCase();
-      const nm = q.match(/\b([0-9]{1,2})\b/);
-      parsed = {
-        summary: `Searching for: ${userQuery}`,
-        type: /tv|series|show/.test(q) ? "tv" : "movie",
-        genre_name: null,
-        genre_id: null,
-        actor: null,
-        director: null,
-        year: null,
-        year_after: null,
-        year_before: null,
-        min_rating: null,
-        limit: nm ? Number(nm[1]) : null
-      };
-      for (const g of Object.keys(GENRE_MAP)) if (q.includes(g)) parsed.genre_id = GENRE_MAP[g];
+  useEffect(() => {
+    if (chatRef.current) {
+      chatRef.current.scrollTop = chatRef.current.scrollHeight;
     }
+  }, [messages, movies]);
 
-    // normalize genre_name -> id
-    if (parsed.genre_name && !parsed.genre_id) {
-      const key = String(parsed.genre_name).toLowerCase().replace(/\s+/g, "_");
-      parsed.genre_id = GENRE_MAP[key] || null;
-    }
-
-    // determine limit
-    let limit = 10;
-    if (parsed.limit && Number.isFinite(Number(parsed.limit))) {
-      limit = Math.max(1, Math.min(50, Number(parsed.limit)));
-    } else {
-      const nm = (userQuery || "").match(/\b([0-9]{1,2})\b/);
-      if (nm) limit = Math.max(1, Math.min(50, Number(nm[1])));
-    }
-
-    // 2) fetch movies prioritized: actor -> director -> discover
-    let movies = [];
-    if (parsed.actor) {
-      const pid = await getPersonId(parsed.actor);
-      if (pid) {
-        const url = new URL("https://api.themoviedb.org/3/discover/movie");
-        url.searchParams.set("api_key", TMDB_KEY);
-        url.searchParams.set("with_cast", String(pid));
-        url.searchParams.set("sort_by", "popularity.desc");
-        const r = await fetch(url.toString());
-        if (r.ok) {
-          const j = await r.json();
-          movies = j.results || [];
-        }
+  async function callFireworks(conversation) {
+    const res = await fetch(
+      "https://api.fireworks.ai/inference/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${FW_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: FW_MODEL,
+          temperature: 0.4,
+          max_tokens: 500,
+          messages: conversation,
+        }),
       }
-    } else if (parsed.director) {
-      const pid = await getPersonId(parsed.director);
-      if (pid) {
-        const url = `https://api.themoviedb.org/3/person/${pid}/movie_credits?api_key=${TMDB_KEY}`;
-        const r = await fetch(url);
-        if (r.ok) {
-          const j = await r.json();
-          movies = (j.crew || []).filter(c => c.job && c.job.toLowerCase().includes("director"));
-        }
-      }
-    }
+    );
 
-    if (!movies || movies.length === 0) {
-      movies = await discoverTMDB(parsed, Math.max(limit, 20)); // fetch more to filter locally
-    }
-
-    // 3) client-side filtering & ranking
-    movies = (movies || []).filter(m => {
-      if (parsed.min_rating && (m.vote_average || 0) < Number(parsed.min_rating)) return false;
-      const y = (m.release_date || m.first_air_date || "").slice(0,4);
-      if (parsed.year && y && Number(y) !== Number(parsed.year)) return false;
-      if (parsed.year_after && y && Number(y) <= Number(parsed.year_after)) return false;
-      if (parsed.year_before && y && Number(y) >= Number(parsed.year_before)) return false;
-      if (parsed.genre_id && Array.isArray(m.genre_ids) && m.genre_ids.length && !m.genre_ids.includes(Number(parsed.genre_id))) return false;
-      return true;
-    });
-
-    movies.sort((a,b) => {
-      const av = a.vote_average || 0;
-      const bv = b.vote_average || 0;
-      if (bv !== av) return bv - av;
-      return (b.popularity || 0) - (a.popularity || 0);
-    });
-
-    const top = (movies || []).slice(0, limit).map(m => ({
-      id: m.id,
-      title: m.title || m.name,
-      overview: m.overview || "",
-      poster_path: m.poster_path,
-      vote_average: m.vote_average,
-      release_date: m.release_date || m.first_air_date,
-      tmdb: `https://www.themoviedb.org/${m.media_type || "movie"}/${m.id}`,
-      local: `${SITE_BASE}/info?id=${m.id}`
-    }));
-
-    return {
-      summary: parsed.summary || `Searching for "${userQuery}"`,
-      movies: top
-    };
-
-  } catch (err) {
-    console.error("PopcornInterface error", err);
-    return {
-      summary: "⚠️ Error: could not fetch results right now.",
-      movies: []
-    };
+    const data = await res.json();
+    return data.choices?.[0]?.message?.content || "";
   }
+
+  async function fetchMovies(filters) {
+    const url = new URL(
+      "https://api.themoviedb.org/3/discover/movie"
+    );
+
+    url.searchParams.set("api_key", TMDB_KEY);
+    url.searchParams.set("sort_by", "popularity.desc");
+
+    if (filters.year) url.searchParams.set("primary_release_year", filters.year);
+    if (filters.year_after)
+      url.searchParams.set("primary_release_date.gte", `${filters.year_after}-01-01`);
+    if (filters.year_before)
+      url.searchParams.set("primary_release_date.lte", `${filters.year_before}-12-31`);
+    if (filters.genre_id) url.searchParams.set("with_genres", filters.genre_id);
+    if (filters.min_rating)
+      url.searchParams.set("vote_average.gte", filters.min_rating);
+
+    const res = await fetch(url);
+    const data = await res.json();
+    return data.results?.slice(0, filters.count || 10) || [];
+  }
+
+  async function onSend() {
+    const userText = input.trim();
+    if (!userText) return;
+
+    setMessages((m) => [...m, { role: "user", content: userText }]);
+    setInput("");
+    setLoading(true);
+
+    try {
+      // حفظ المحادثة (الكونتكست)
+      const conversation = [
+        { role: "system", content: "You are a movie assistant. Return JSON." },
+        ...messages,
+        { role: "user", content: userText },
+      ];
+
+      // AI تحليل request
+      const raw = await callFireworks(conversation);
+
+      const cleaned = raw
+        .replace(/```json/g, "")
+        .replace(/```/g, "")
+        .trim();
+
+      let parsed;
+      try {
+        parsed = JSON.parse(cleaned);
+      } catch {
+        parsed = null;
+      }
+
+      if (!parsed || typeof parsed !== "object") {
+        setMessages((m) => [
+          ...m,
+          { role: "assistant", content: "⚠️ Sorry — I couldn’t understand that." },
+        ]);
+        setLoading(false);
+        return;
+      }
+
+      setMessages((m) => [
+        ...m,
+        { role: "assistant", content: parsed.summary || "Searching…" },
+      ]);
+
+      // TMDB
+      const results = await fetchMovies(parsed);
+      setMovies(results);
+    } catch (err) {
+      setMessages((m) => [
+        ...m,
+        { role: "assistant", content: "⚠️ Error fetching results." },
+      ]);
+    }
+
+    setLoading(false);
+  }
+
+  function movieCard(m) {
+    return (
+      <a
+        key={m.id}
+        href={`/info?id=${m.id}`}
+        className="flex gap-3 bg-white/10 rounded-lg overflow-hidden hover:bg-white/20 transition p-2"
+      >
+        {m.poster_path && (
+          <img
+            src={`https://image.tmdb.org/t/p/w200${m.poster_path}`}
+            className="w-[60px] h-[90px] rounded object-cover"
+          />
+        )}
+        <div className="flex flex-col justify-between text-sm">
+          <div className="font-semibold">{m.title}</div>
+          <div className="text-white/60">
+            ⭐ {m.vote_average?.toFixed(1)} | {m.release_date?.slice(0, 4)}
+          </div>
+        </div>
+      </a>
+    );
+  }
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* HEADER */}
+      <div className="flex justify-between items-center p-3 bg-white/10 border-b border-white/10">
+        <div>
+          <div className="text-lg font-bold">Dobby AI</div>
+          <div className="text-xs text-white/60">Movie Assistant</div>
+        </div>
+
+        <button
+          onClick={() => setActive(false)}
+          className="text-red-400 text-xl font-bold"
+        >
+          ×
+        </button>
+      </div>
+
+      {/* CHAT */}
+      <div
+        ref={chatRef}
+        className="flex-1 overflow-y-auto p-3 space-y-3"
+      >
+        {messages.map((m, i) => (
+          <div
+            key={i}
+            className={`p-2 rounded-lg max-w-[85%] ${
+              m.role === "user"
+                ? "ml-auto bg-emerald-400 text-black"
+                : "mr-auto bg-white/10"
+            }`}
+          >
+            {m.content}
+          </div>
+        ))}
+
+        {loading && (
+          <div className="mr-auto bg-white/10 p-2 rounded-lg animate-pulse">
+            Thinking…
+          </div>
+        )}
+      </div>
+
+      {/* RESULTS */}
+      {movies.length > 0 && (
+        <div className="p-3 border-t border-white/10 space-y-3 overflow-y-auto max-h-[40%]">
+          {movies.map(movieCard)}
+        </div>
+      )}
+
+      {/* INPUT */}
+      <div className="p-3 border-t border-white/10 bg-black/40">
+        <div className="flex gap-2">
+          <input
+            className="flex-1 p-2 rounded bg-white/10 text-white outline-none"
+            placeholder="Ask something…"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && onSend()}
+          />
+          <button
+            onClick={onSend}
+            className="px-4 py-2 bg-emerald-400 rounded text-black font-bold"
+          >
+            Send
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
