@@ -1,186 +1,210 @@
-import React, { useState, useRef, useEffect } from "react";
-import PopcornInterface from "./BotInterface";
-import MovieCardLite from "./MovieCardLite";
+// AiBot.jsx
+import React, { useEffect, useRef, useState } from "react";
+import PopcornInterface from "./BotInterface"; // same folder
 
 export default function AiBot() {
-  const [messages, setMessages] = useState([
-    { id: Date.now(), role: "system", text: "Hello — I'm Popcorn, your movie assistant." },
-  ]);
-  const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [messages, setMessages] = useState([]);
   const [movies, setMovies] = useState([]);
+  const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState("");
-  const chatRef = useRef(null);
+  const resultsRef = useRef(null);
 
   useEffect(() => {
-    if (chatRef.current) {
-      chatRef.current.scrollTop = chatRef.current.scrollHeight;
+    // scroll results to top when new search happens
+    if (resultsRef.current) {
+      resultsRef.current.scrollTop = 0;
     }
-  }, [messages, movies, loading]);
+  }, [movies]);
 
-  function pushMessage(role, text) {
-    setMessages((m) => [...m, { id: Date.now() + Math.random(), role, text }]);
+  function pushSystem(text) {
+    setMessages(m => [...m, { id: Date.now(), role: "bot", text }]);
+  }
+  function pushUser(text) {
+    setMessages(m => [...m, { id: Date.now(), role: "user", text }]);
   }
 
-  async function handleAsk() {
-    const text = input.trim();
-    if (!text) return;
-
-    pushMessage("user", text);
-    setInput("");
+  async function handleSearch() {
+    const txt = (query || "").trim();
+    if (!txt) return;
+    pushUser(txt);
     setMovies([]);
     setLoading(true);
-    setStatus("Analyzing your request...");
-
+    setStatus("Analyzing request...");
     try {
-      const res = await PopcornInterface(text);
-      const summary = res.summary || "Here's what I found:";
-      pushMessage("bot", summary);
-
-      setStatus("Fetching movie results...");
+      const res = await PopcornInterface(txt);
+      // res: { summary, movies }
+      pushSystem(res.summary || "Here are the results:");
       setMovies(res.movies || []);
       setStatus("");
     } catch (err) {
-      console.error("AiBot error:", err);
-      pushMessage("bot", "⚠️ Sorry — something went wrong. Try again.");
+      console.error(err);
+      pushSystem("⚠️ Something went wrong. Try again.");
       setStatus("");
     } finally {
       setLoading(false);
+      setQuery("");
     }
   }
 
-  useEffect(() => {
-    function onKey(e) {
-      if (e.key === "Enter" && document.activeElement?.id === "ai-input") {
-        e.preventDefault();
-        handleAsk();
-      }
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [input]);
-
   return (
-    <div className="fixed right-6 bottom-6 z-40 w-[96vw] max-w-4xl md:w-[900px] md:right-12 md:bottom-12">
-      <div className="bg-gradient-to-br from-black/80 to-neutral-900/70 backdrop-blur-lg border border-white/10 rounded-2xl shadow-2xl overflow-hidden">
-        
-        {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-emerald-400 to-sky-400 flex items-center justify-center text-black font-bold">
-              PP
-            </div>
-            <div>
-              <div className="text-sm font-semibold text-white">Popcorn Pilot</div>
-              <div className="text-xs text-white/60">AI Movie Assistant</div>
-            </div>
-          </div>
+    <>
+      {/* Floating round button */}
+      <div
+        style={{
+          position: "fixed",
+          right: 20,
+          bottom: 20,
+          zIndex: 60,
+        }}
+      >
+        <button
+          onClick={() => setOpen(v => !v)}
+          aria-label="Open Popcorn Pilot"
+          title="Popcorn Pilot"
+          style={{
+            width: 60,
+            height: 60,
+            borderRadius: "999px",
+            border: "none",
+            background: "linear-gradient(135deg,#10b981,#06b6d4)",
+            boxShadow: "0 8px 30px rgba(6,95,70,0.25)",
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            color: "#031018",
+            fontWeight: 700,
+            fontSize: 18,
+          }}
+        >
+          PP
+        </button>
+      </div>
 
-          <div className="flex items-center gap-2">
-            <div className="text-xs text-white/50">{status}</div>
-
-            {loading && (
-              <div className="w-8 h-8 rounded bg-sky-500/20 flex items-center justify-center text-sky-300">
-                <svg className="w-5 h-5 animate-spin" viewBox="0 0 24 24" fill="none">
-                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" strokeOpacity="0.3"></circle>
-                  <path d="M22 12a10 10 0 00-10-10" stroke="currentColor" strokeWidth="4" strokeLinecap="round"></path>
-                </svg>
+      {/* Chat box */}
+      {open && (
+        <div
+          style={{
+            position: "fixed",
+            right: 20,
+            bottom: 90,
+            zIndex: 60,
+            width: 600,
+            maxWidth: "calc(100vw - 40px)",
+            borderRadius: 14,
+            overflow: "hidden",
+            background: "linear-gradient(180deg, rgba(6,7,9,0.95), rgba(10,11,13,0.95))",
+            boxShadow: "0 10px 30px rgba(2,6,23,0.6)",
+            border: "1px solid rgba(255,255,255,0.04)",
+            color: "#fff",
+            display: "flex",
+            flexDirection: "column",
+            minHeight: 360,
+            maxHeight: "72vh"
+          }}
+        >
+          {/* header */}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: 12, borderBottom: "1px solid rgba(255,255,255,0.03)" }}>
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <div style={{ width: 40, height: 40, borderRadius: 999, background: "linear-gradient(135deg,#06b6d4,#10b981)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, color: "#031018" }}>
+                PP
               </div>
-            )}
+              <div>
+                <div style={{ fontWeight: 700 }}>Popcorn Pilot</div>
+                <div style={{ fontSize: 12, color: "rgba(255,255,255,0.6)" }}>AI Movie Assistant</div>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <div style={{ fontSize: 13, color: "rgba(255,255,255,0.6)" }}>{status}</div>
+              <button
+                onClick={() => { setOpen(false); }}
+                title="Close"
+                style={{ background: "transparent", border: "none", color: "rgba(255,255,255,0.7)", cursor: "pointer", padding: 6 }}
+              >
+                ✕
+              </button>
+            </div>
           </div>
-        </div>
 
-        {/* Body */}
-        <div className="md:flex">
-
-          {/* Chat + Results */}
-          <div className="w-full md:w-2/3 p-4">
-            
-            {/* Chat */}
-            <div ref={chatRef} className="max-h-[40vh] overflow-y-auto pr-2 space-y-3 mb-4">
-              {messages
-                .filter((m) => m.role !== "system")
-                .map((m) => (
-                  <div key={m.id}>
-                    {m.role === "user" ? (
-                      <div className="text-sm text-right">
-                        <div className="inline-block bg-white/90 text-black px-3 py-2 rounded-lg max-w-[80%]">
-                          {m.text}
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="text-sm text-left">
-                        <div className="inline-block bg-gradient-to-r from-emerald-700/10 to-sky-700/8 text-white px-3 py-2 rounded-lg max-w-[90%]">
-                          <strong className="text-emerald-300 mr-2">Popcorn:</strong> 
-                          {m.text}
-                        </div>
-                      </div>
-                    )}
+          {/* body: left messages + right inputs/results */}
+          <div style={{ display: "flex", gap: 0, flex: 1, minHeight: 280 }}>
+            {/* left: messages + results grid */}
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", padding: 12 }}>
+              <div style={{ flex: "0 0 110px", overflow: "auto", padding: 6 }}>
+                {/* Messages area (compact) */}
+                {messages.slice(-6).map(m => (
+                  <div key={m.id} style={{ marginBottom: 8, display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start" }}>
+                    <div style={{
+                      maxWidth: "80%",
+                      padding: "8px 10px",
+                      borderRadius: 10,
+                      background: m.role === "user" ? "rgba(255,255,255,0.9)" : "linear-gradient(90deg,#083344,#064047)",
+                      color: m.role === "user" ? "#000" : "#c9fff1"
+                    }}>
+                      {m.text}
+                    </div>
                   </div>
                 ))}
+              </div>
+
+              {/* Results container (scroll inside fixed area) */}
+              <div ref={resultsRef} style={{ flex: 1, overflowY: "auto", padding: 8, display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 10 }}>
+                {movies && movies.length > 0 ? movies.map(m => (
+                  <div key={m.id} style={{ background: "linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01))", borderRadius: 10, padding: 8 }}>
+                    <div style={{ height: 150, borderRadius: 8, overflow: "hidden", background: "#111" }}>
+                      {m.poster_path ? (
+                        <img src={`https://image.tmdb.org/t/p/w500${m.poster_path}`} alt={m.title} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                      ) : (
+                        <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "#999" }}>No Image</div>
+                      )}
+                    </div>
+                    <div style={{ marginTop: 8 }}>
+                      <div style={{ fontWeight: 700 }}>{m.title}</div>
+                      <div style={{ fontSize: 12, color: "rgba(255,255,255,0.6)" }}>{m.release_date ? m.release_date.slice(0,4) : ""} • ⭐ {m.vote_average || "N/A"}</div>
+                      <div style={{ marginTop: 6, fontSize: 13, color: "rgba(255,255,255,0.75)", maxHeight: 48, overflow: "hidden", textOverflow: "ellipsis" }}>{m.overview}</div>
+                    </div>
+                  </div>
+                )) : (
+                  <div style={{ gridColumn: "1 / -1", color: "rgba(255,255,255,0.6)", fontStyle: "italic" }}>
+                    {loading ? "Looking for movies..." : "Ask me about movies — e.g. \"Action movies 2010-2015 Tom Cruise\""}
+                  </div>
+                )}
+              </div>
             </div>
 
-            {/* Results */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {movies?.length > 0 ? (
-                movies.map((mv) => (
-                  <div key={mv.id} className="w-full">
-                    <MovieCardLite movie={mv} />
-                  </div>
-                ))
-              ) : (
-                !loading && (
-                  <div className="text-sm text-white/50 italic">
-                    Ask me about movies — e.g. "Horror movies 2010–2015 Tom Cruise"
-                  </div>
-                )
-              )}
-            </div>
-          </div>
-
-          {/* Input Panel */}
-          <div className="w-full md:w-1/3 p-4 border-l border-white/10">
-            <div className="mb-3">
-              <label className="text-xs text-white/60">Ask Popcorn</label>
+            {/* right: input + controls */}
+            <div style={{ width: 240, borderLeft: "1px solid rgba(255,255,255,0.03)", padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+              <label style={{ fontSize: 12, color: "rgba(255,255,255,0.7)" }}>Ask Popcorn</label>
               <input
-                id="ai-input"
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
+                value={query}
+                onChange={e => setQuery(e.target.value)}
                 placeholder='Try: "Action movies like John Wick 2014"'
-                className="w-full mt-2 p-3 rounded-lg bg-white/5 text-white placeholder-white/40 outline-none"
+                style={{ padding: 10, borderRadius: 8, border: "1px solid rgba(255,255,255,0.04)", background: "rgba(255,255,255,0.03)", color: "#fff", outline: "none" }}
+                onKeyDown={e => { if (e.key === "Enter") handleSearch(); }}
               />
-            </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button disabled={loading} onClick={handleSearch} style={{ flex: 1, padding: 10, borderRadius: 8, background: "#06b6d4", color: "#00131a", border: "none", fontWeight: 700, cursor: "pointer" }}>
+                  Ask
+                </button>
+                <button onClick={() => { setMessages([]); setMovies([]); setQuery(""); }} style={{ padding: 10, borderRadius: 8, background: "transparent", color: "#fff", border: "1px solid rgba(255,255,255,0.06)" }}>
+                  Clear
+                </button>
+              </div>
 
-            <div className="flex gap-2">
-              <button
-                onClick={handleAsk}
-                disabled={loading}
-                className="flex-1 py-3 rounded-lg bg-emerald-400 text-black font-semibold hover:opacity-95 disabled:opacity-60"
-              >
-                Ask
-              </button>
+              <div style={{ fontSize: 12, color: "rgba(255,255,255,0.6)", marginTop: 8 }}>
+                Tip: Use actor, director, year, or rating — e.g. "Scary movies after 2010 with rating > 7"
+              </div>
 
-              <button
-                onClick={() => {
-                  setMessages([{ id: Date.now(), role: "system", text: "Hello — I'm Popcorn, your movie assistant." }]);
-                  setMovies([]);
-                  setInput("");
-                }}
-                className="py-3 px-4 rounded-lg bg-white/10 text-white"
-              >
-                Clear
-              </button>
-            </div>
-
-            {/* Tip (fixed JSX issue) */}
-            <div className="mt-4 text-xs text-white/50">
-              Tip: Use actor, director, year, or rating — e.g. {"\"Scary movies after 2010 with rating > 7\""}
+              <div style={{ marginTop: "auto", fontSize: 11, color: "rgba(255,255,255,0.5)" }}>
+                Popcorn Pilot — results powered by TMDB
+              </div>
             </div>
           </div>
-
         </div>
-
-      </div>
-    </div>
+      )}
+    </>
   );
 }
