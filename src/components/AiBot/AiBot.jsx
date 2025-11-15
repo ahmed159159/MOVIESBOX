@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import ChatbotIcon from "../../assets/chatbot";
-import BotInterface from "./BotInterface";
+import PopcornChat from "./PopcornChat"; // بدل BotInterface
 
 function AiBot() {
   const [active, setActive] = useState(false);
@@ -20,14 +20,14 @@ function AiBot() {
       ) : (
         <div
           className="
-            w-[90vw] sm:w-[500px] md:w-[600px] 
-            h-[75vh] md:h-[78vh]
+            w-[90vw] sm:w-[500px] md:w-[650px] 
+            h-[82vh]
             rounded-2xl shadow-2xl overflow-hidden 
             bg-black/80 backdrop-blur-xl border border-white/10
             animate-fadeIn
           "
         >
-          <BotInterface setActive={setActive} />
+          <PopcornChat setActive={setActive} />
         </div>
       )}
     </div>

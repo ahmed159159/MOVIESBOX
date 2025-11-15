@@ -1,47 +1,66 @@
 // ===========================
-// 🔥 Popcorn AI Bot (Fireworks)
+// 🔥 Popcorn AI Bot (Fireworks) — FIXED
 // ===========================
-
-import { useState } from "react";
 
 const FIREWORKS_API_KEY = import.meta.env.VITE_FIREWORKS_API_KEY;
 const FIREWORKS_MODEL = import.meta.env.VITE_FIREWORKS_MODEL;
 const TMDB_KEY = import.meta.env.VITE_TMDB_KEY;
 
-// ---------- Global context (memory)
+// TMDB GENRE MAP
+const GENRES = {
+  action: 28,
+  adventure: 12,
+  animation: 16,
+  comedy: 35,
+  crime: 80,
+  documentary: 99,
+  drama: 18,
+  family: 10751,
+  fantasy: 14,
+  history: 36,
+  horror: 27,
+  music: 10402,
+  mystery: 9648,
+  romance: 10749,
+  sci_fi: 878,
+  thriller: 53,
+  war: 10752
+};
+
+// ----------- Conversation memory -----------
+let memoryFilters = {};
+
 let conversation = [
   {
     role: "system",
     content: `
 You are Dobby, a smart movie assistant.
-Your job is to extract filters from the user's request ONLY in JSON.
+You ALWAYS reply with a single clean JSON object only.
 
-STRICT RULE:
-- ALWAYS return JSON ONLY. Never return text outside JSON.
-- JSON format:
-
+FORMAT:
 {
  "type": "movie",
  "genre": "<genre or null>",
  "actor": "<actor name or null>",
  "director": "<director name or null>",
  "year": "<exact year or null>",
+ "year_after": "<minimum year or null>",
+ "year_before": "<maximum year or null>",
  "rating": "<minimum rating or null>",
- "limit": "<number of movies or null>",
- "summary": "<1 short English sentence summarizing the request>"
+ "limit": "<number or null>",
+ "summary": "<short English summary>"
 }
 
-If the user asks follow-up like "from 2015" or "with Tom Cruise",
-USE previous filters from the conversation and update them.
-
-Never ask questions. Never apologize. Just return JSON.
+Rules:
+- If user gives new detail like "from 2015", merge it with previous filters.
+- Never ask questions.
+- Never talk outside JSON.
 `
   }
 ];
 
-// ---------------- FIREWORKS API ----------------
-
-async function askFireworks(prompt) {
+// ----------- FIREWORKS REQUEST -----------
+async function fireworksQuery(prompt) {
   conversation.push({ role: "user", content: prompt });
 
   const res = await fetch("https://api.fireworks.ai/inference/v1/chat/completions", {
@@ -53,38 +72,30 @@ async function askFireworks(prompt) {
     body: JSON.stringify({
       model: FIREWORKS_MODEL,
       messages: conversation,
-      temperature: 0.2,
-      max_tokens: 300
+      max_tokens: 200,
+      temperature: 0.2
     })
   });
 
   const data = await res.json();
-  let output = data?.choices?.[0]?.message?.content || "";
+  let txt = data?.choices?.[0]?.message?.content || "";
 
-  // Clean non-JSON
-  output = output.trim();
-  if (output.startsWith("```")) {
-    output = output.substring(output.indexOf("{"), output.lastIndexOf("}") + 1);
+  // clean JSON
+  txt = txt.trim();
+  if (txt.startsWith("```")) {
+    txt = txt.substring(txt.indexOf("{"), txt.lastIndexOf("}") + 1);
   }
 
   try {
-    const parsed = JSON.parse(output);
-    conversation.push({ role: "assistant", content: JSON.stringify(parsed) });
-    return parsed;
-  } catch (err) {
-    console.log("Fixing malformed JSON...");
-
-    // fallback: ask AI again but force JSON strictly
-    return await askFireworks(`
-Return ONLY JSON. Fix this into valid JSON:
-${output}
-`);
+    return JSON.parse(txt);
+  } catch (e) {
+    return null; // we will handle it safely
   }
 }
 
-// ================ TMDB HELPERS ==================
+// ----------- TMDB HELPERS -----------
 
-async function searchByActor(name) {
+async function getActorId(name) {
   const res = await fetch(
     `https://api.themoviedb.org/3/search/person?api_key=${TMDB_KEY}&query=${encodeURIComponent(name)}`
   );
@@ -92,9 +103,9 @@ async function searchByActor(name) {
   return data.results?.[0]?.id || null;
 }
 
-async function getActorMovies(personId) {
+async function getActorMovies(id) {
   const res = await fetch(
-    `https://api.themoviedb.org/3/person/${personId}/movie_credits?api_key=${TMDB_KEY}`
+    `https://api.themoviedb.org/3/person/${id}/movie_credits?api_key=${TMDB_KEY}`
   );
   const data = await res.json();
   return data.cast || [];
@@ -105,8 +116,15 @@ async function discoverMovies(filters) {
   url.searchParams.set("api_key", TMDB_KEY);
   url.searchParams.set("sort_by", "popularity.desc");
 
-  if (filters.genre) url.searchParams.set("with_genres", filters.genre);
+  if (filters.genre) {
+    const num = GENRES[filters.genre.toLowerCase()];
+    if (num) url.searchParams.set("with_genres", num);
+  }
   if (filters.year) url.searchParams.set("primary_release_year", filters.year);
+  if (filters.year_after)
+    url.searchParams.set("primary_release_date.gte", `${filters.year_after}-01-01`);
+  if (filters.year_before)
+    url.searchParams.set("primary_release_date.lte", `${filters.year_before}-12-31`);
   if (filters.rating) url.searchParams.set("vote_average.gte", filters.rating);
 
   const res = await fetch(url);
@@ -114,36 +132,41 @@ async function discoverMovies(filters) {
   return data.results || [];
 }
 
-// ================ MAIN BOT FUNCTION ================
+// ----------- MAIN FUNCTION -----------
 
 export default async function BotInterface(query) {
   try {
-    // 1) Get structured filters from Fireworks AI
-    const filters = await askFireworks(query);
+    const parsed = await fireworksQuery(query);
 
-    let movies = [];
-    const limit = filters.limit ? Number(filters.limit) : 10;
-
-    // 2) Actor
-    if (filters.actor) {
-      const id = await searchByActor(filters.actor);
-      if (id) movies = await getActorMovies(id);
-    } else {
-      // 3) General discover
-      movies = await discoverMovies(filters);
+    if (!parsed || typeof parsed !== "object") {
+      return {
+        summary: "Sorry — I couldn’t understand that.",
+        movies: []
+      };
     }
 
-    // 4) Limit results
-    movies = movies.slice(0, limit);
+    // merge with memory
+    memoryFilters = { ...memoryFilters, ...parsed };
+
+    const limit = memoryFilters.limit ? Number(memoryFilters.limit) : 10;
+
+    let movies = [];
+
+    if (memoryFilters.actor) {
+      const id = await getActorId(memoryFilters.actor);
+      if (id) movies = await getActorMovies(id);
+    } else {
+      movies = await discoverMovies(memoryFilters);
+    }
 
     return {
-      summary: filters.summary,
-      movies
+      summary: parsed.summary,
+      movies: movies.slice(0, limit)
     };
-  } catch (err) {
-    console.error("Bot error:", err);
+  } catch (e) {
+    console.error("BOT ERROR:", e);
     return {
-      summary: "⚠️ Sorry—couldn't fetch results.",
+      summary: "⚠️ Error — could not fetch results.",
       movies: []
     };
   }
