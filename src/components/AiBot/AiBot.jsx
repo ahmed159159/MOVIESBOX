@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import ChatbotIcon from "../../assets/chatbot";
+import botAvatar from "../../assets/bot-avatar.png"; // ← أيقونة البوت الجديدة
 import PopcornChat from "./PopcornChat";
 
 function AiBot() {
@@ -10,12 +10,18 @@ function AiBot() {
       {!active ? (
         <button
           onClick={() => setActive(true)}
-          className="flex justify-center items-center 
-          w-24 h-24 rounded-full shadow-xl
-          bg-gradient-to-br from-emerald-400 to-sky-400 
-          hover:scale-105 transition-all duration-300"
+          className="
+            flex justify-center items-center 
+            w-24 h-24 rounded-full shadow-xl
+            bg-gradient-to-br from-emerald-400 to-sky-400 
+            hover:scale-105 transition-all duration-300
+          "
         >
-          <ChatbotIcon className="scale-125" />
+          <img
+            src={botAvatar}
+            alt="AI Bot"
+            className="w-16 h-16 object-cover rounded-full shadow-md"
+          />
         </button>
       ) : (
         <div
