@@ -1,10 +1,10 @@
 // ===========================
-// 🔥 Popcorn AI Bot (Fireworks) — FIXED
+// 🔥 Popcorn AI Bot 
 // ===========================
 
 const FIREWORKS_API_KEY = import.meta.env.VITE_FIREWORKS_API_KEY;
 const FIREWORKS_MODEL = import.meta.env.VITE_FIREWORKS_MODEL;
-const TMDB_KEY = import.meta.env.VITE_TMDB_KEY;
+const TMDB_KEY = import.meta.env.VITE_TMDB_API_KEY;
 
 // TMDB GENRE MAP
 const GENRES = {
@@ -24,20 +24,32 @@ const GENRES = {
   romance: 10749,
   sci_fi: 878,
   thriller: 53,
-  war: 10752
+  war: 10752,
+  western: 37
 };
 
-// ----------- Conversation memory -----------
-let memoryFilters = {};
+// ------------ MEMORY (context awareness)
+let memory = {
+  type: "movie",
+  genre: null,
+  actor: null,
+  director: null,
+  year: null,
+  year_after: null,
+  year_before: null,
+  rating: null,
+  limit: 10
+};
 
+// ------------ FIREWORKS SMART JSON PROMPT
 let conversation = [
   {
     role: "system",
     content: `
-You are Dobby, a smart movie assistant.
-You ALWAYS reply with a single clean JSON object only.
+You are Dobby, an intelligent movie assistant.  
+You ALWAYS reply using ONLY CLEAN JSON (never text outside JSON).
 
-FORMAT:
+USE THIS EXACT FORMAT:
 {
  "type": "movie",
  "genre": "<genre or null>",
@@ -51,16 +63,18 @@ FORMAT:
  "summary": "<short English summary>"
 }
 
-Rules:
-- If user gives new detail like "from 2015", merge it with previous filters.
+RULES:
+- If user gives follow-up info (e.g. "from 2015", "with Tom Cruise"), MERGE it with previous memory.
+- If spelling is wrong (e.g. "tom coures"), auto-correct to the nearest real actor.
+- Never apologize.
 - Never ask questions.
-- Never talk outside JSON.
+- NEVER output anything except VALID JSON.
 `
   }
 ];
 
-// ----------- FIREWORKS REQUEST -----------
-async function fireworksQuery(prompt) {
+// ------------ FIREWORKS API CALL
+async function askFireworks(prompt) {
   conversation.push({ role: "user", content: prompt });
 
   const res = await fetch("https://api.fireworks.ai/inference/v1/chat/completions", {
@@ -72,29 +86,24 @@ async function fireworksQuery(prompt) {
     body: JSON.stringify({
       model: FIREWORKS_MODEL,
       messages: conversation,
-      max_tokens: 200,
-      temperature: 0.2
+      max_tokens: 300,
+      temperature: 0.1
     })
   });
 
   const data = await res.json();
-  let txt = data?.choices?.[0]?.message?.content || "";
+  let out = data?.choices?.[0]?.message?.content || "";
 
-  // clean JSON
-  txt = txt.trim();
-  if (txt.startsWith("```")) {
-    txt = txt.substring(txt.indexOf("{"), txt.lastIndexOf("}") + 1);
+  // remove "```json ...```"
+  out = out.trim();
+  if (out.startsWith("```")) {
+    out = out.substring(out.indexOf("{"), out.lastIndexOf("}") + 1);
   }
 
-  try {
-    return JSON.parse(txt);
-  } catch (e) {
-    return null; // we will handle it safely
-  }
+  return JSON.parse(out);
 }
 
-// ----------- TMDB HELPERS -----------
-
+// ------------ TMDB FUNCTIONS
 async function getActorId(name) {
   const res = await fetch(
     `https://api.themoviedb.org/3/search/person?api_key=${TMDB_KEY}&query=${encodeURIComponent(name)}`
@@ -117,56 +126,63 @@ async function discoverMovies(filters) {
   url.searchParams.set("sort_by", "popularity.desc");
 
   if (filters.genre) {
-    const num = GENRES[filters.genre.toLowerCase()];
-    if (num) url.searchParams.set("with_genres", num);
+    const genreId = GENRES[filters.genre.toLowerCase()];
+    if (genreId) url.searchParams.set("with_genres", genreId);
   }
-  if (filters.year) url.searchParams.set("primary_release_year", filters.year);
+
+  if (filters.year)
+    url.searchParams.set("primary_release_year", filters.year);
+
   if (filters.year_after)
     url.searchParams.set("primary_release_date.gte", `${filters.year_after}-01-01`);
+
   if (filters.year_before)
     url.searchParams.set("primary_release_date.lte", `${filters.year_before}-12-31`);
-  if (filters.rating) url.searchParams.set("vote_average.gte", filters.rating);
+
+  if (filters.rating)
+    url.searchParams.set("vote_average.gte", filters.rating);
 
   const res = await fetch(url);
   const data = await res.json();
   return data.results || [];
 }
 
-// ----------- MAIN FUNCTION -----------
-
+// ------------ MAIN BOT HANDLER
 export default async function BotInterface(query) {
   try {
-    const parsed = await fireworksQuery(query);
+    // 1) Ask Fireworks for structured JSON
+    const parsed = await askFireworks(query);
 
-    if (!parsed || typeof parsed !== "object") {
-      return {
-        summary: "Sorry — I couldn’t understand that.",
-        movies: []
-      };
-    }
+    // 2) Update memory (context handling)
+    memory = { ...memory, ...parsed };
 
-    // merge with memory
-    memoryFilters = { ...memoryFilters, ...parsed };
-
-    const limit = memoryFilters.limit ? Number(memoryFilters.limit) : 10;
-
+    // 3) Fetch movies
     let movies = [];
 
-    if (memoryFilters.actor) {
-      const id = await getActorId(memoryFilters.actor);
+    if (memory.actor) {
+      const id = await getActorId(memory.actor);
       if (id) movies = await getActorMovies(id);
     } else {
-      movies = await discoverMovies(memoryFilters);
+      movies = await discoverMovies(memory);
     }
+
+    // 4) Limit results
+    movies = movies.slice(0, memory.limit || 10);
+
+    // 5) Attach your website link
+    movies = movies.map((m) => ({
+      ...m,
+      link: `https://moviesbox-delta.vercel.app/info?id=${m.id}`
+    }));
 
     return {
       summary: parsed.summary,
-      movies: movies.slice(0, limit)
+      movies
     };
   } catch (e) {
-    console.error("BOT ERROR:", e);
+    console.error("🔥 BOT ERROR:", e);
     return {
-      summary: "⚠️ Error — could not fetch results.",
+      summary: "⚠️ Error — Could not fetch results",
       movies: []
     };
   }
