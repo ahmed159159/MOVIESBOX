@@ -35,9 +35,7 @@ function Info() {
 
       try {
         const movID = new URLSearchParams(location.search).get("id");
-        if (!movID) {
-          throw new Error("No movie ID provided");
-        }
+        if (!movID) throw new Error("No movie ID provided");
 
         const movieResponse = await axios.get(
           `https://api.themoviedb.org/3/${switchmov}/${movID}?api_key=${API_KEY}&language=en-US`
@@ -46,7 +44,7 @@ function Info() {
         setFunDesc(
           getFunDesc({
             movieName: movieResponse.data.title,
-            releaseDate: movieResponse.data.release_data,
+            releaseDate: movieResponse.data.release_date,
             lang: movieResponse.data.original_language,
           })
         );
@@ -77,8 +75,7 @@ function Info() {
 
   useEffect(() => {
     if (!movie?.id) return;
-    const isMovieLiked = watchList.some((mov) => mov.id === movie.id);
-    setIsLiked(isMovieLiked);
+    setIsLiked(watchList.some((mov) => mov.id === movie.id));
   }, [watchList, movie]);
 
   const handleLike = () => {
@@ -89,7 +86,6 @@ function Info() {
     } else {
       setWatchList([...watchList, movie]);
     }
-
     setIsLiked(!isLiked);
   };
 
@@ -108,17 +104,14 @@ function Info() {
 
   if (!movie?.id) {
     return (
-      <div className="min-h-screen bg-ultra-black flex items-center justify-center">
-        <div className="text-white text-4xl font-bold">
-          No movie data available 😟
-        </div>
+      <div className="min-h-screen bg-ultra-black flex items-center justify-center text-white text-4xl font-bold">
+        No movie data available 😟
       </div>
     );
   }
 
   return (
     <div className="min-h-screen bg-ultra-black text-white">
-      {/* Hero Backdrop */}
       <div className="relative h-[50vh] md:h-[60vh] overflow-hidden">
         {movie.backdrop_path && (
           <>
@@ -127,7 +120,7 @@ function Info() {
               className="w-full h-full object-cover"
               alt="Backdrop"
             />
-            <div className="absolute inset-0 bg-gradient-to-t from-ultra-black via-black/70 to-black/30"></div>
+            <div className="absolute inset-0 bg-gradient-to-t from-black via-black/70 to-black/20"></div>
           </>
         )}
       </div>
@@ -135,7 +128,6 @@ function Info() {
       <div className="relative -mt-32 z-10 max-w-7xl mx-auto px-4 md:px-6">
         <div className="bg-black/40 backdrop-blur-xl rounded-3xl border border-white/20 p-6 md:p-8 shadow-2xl">
           <div className="flex flex-col lg:flex-row gap-8">
-            {/* Poster */}
             <div className="flex-shrink-0 w-full lg:w-80 mx-auto lg:mx-0">
               {movie.poster_path ? (
                 <img
@@ -150,7 +142,6 @@ function Info() {
               )}
             </div>
 
-            {/* Details */}
             <div className="flex flex-col flex-grow">
               <div className="flex items-center mb-6">
                 <h1 className="text-3xl md:text-5xl lg:text-6xl font-black bg-gradient-to-r from-cyan-300 via-purple-400 to-pink-400 bg-clip-text text-transparent">
@@ -172,7 +163,6 @@ function Info() {
                 {movie.overview || "No description available"}
               </p>
 
-              {/* ACTION BUTTONS — Watch Now Removed */}
               <div className="flex flex-wrap gap-4 mb-8">
                 {ytLink && (
                   <button
@@ -214,16 +204,19 @@ function Info() {
           </div>
         </div>
 
-        {/* Stats */}
         <div className="mt-8 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {movie.vote_average > 0 && (
             <div className="bg-white/10 p-6 rounded-2xl">
               ⭐ {movie.vote_average.toFixed(1)} / 10
             </div>
           )}
+
           {date && (
-            <div className="bg-white/10 p-6 rounded-2xl">📅 {date}</div>
+            <div className="bg-white/10 p-6 rounded-2xl">
+              📅 {date}
+            </div>
           )}
+
           {movie.genres?.length > 0 && (
             <div className="bg-white/10 p-6 rounded-2xl">
               🎭 {movie.genres.map((g) => g.name).join(", ")}
@@ -231,31 +224,29 @@ function Info() {
           )}
         </div>
 
-        {/* Recommendations */}
         <div className="mt-12">
           <h2 className="text-2xl font-bold mb-6">🎬 You Might Also Like</h2>
           <Recomendation />
         </div>
       </div>
 
-      {/* Trailer Modal */}
       {showTrailer && (
         <div
-          className="fixed inset-0 bg-black/50 flex items-center justify-center p-4"
+          className="fixed inset-0 bg-black/80 backdrop-blur-xl flex items-center justify-center p-4 z-[9999]"
           onClick={() => setShowTrailer(false)}
         >
           <div
-            className="relative w-full max-w-6xl aspect-video bg-black rounded-2xl"
+            className="relative w-full max-w-5xl aspect-video rounded-2xl overflow-hidden shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             <iframe
               src={`https://www.youtube.com/embed/${ytLink}?autoplay=1`}
-              className="w-full h-full rounded-2xl"
+              className="w-full h-full"
               allowFullScreen
-            />
+            ></iframe>
             <button
               onClick={() => setShowTrailer(false)}
-              className="absolute top-4 right-4 bg-red-600 text-white w-12 h-12 rounded-full"
+              className="absolute top-4 right-4 bg-red-600 text-white w-12 h-12 rounded-full text-xl font-bold"
             >
               ✕
             </button>
